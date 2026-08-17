@@ -55,7 +55,7 @@ def encode_corpus(texts, model, batch_size=128):
     return embeddings.astype("float32")
 
 embeddings = encode_corpus(corpus_texts, model)
-print(embeddings.shape)
+#print(embeddings.shape)
 
 #----------------------------------------FAISS Indexing----------------------------------------------
 
@@ -83,3 +83,62 @@ with open("corpus_metadata.pkl", "rb") as f:
 
 
 #----------------------------------------Query Function (Search)----------------------------------------------
+
+def search(query: str, model, index, meta, top_k: int = 5):
+    query_vec = model.encode([query], convert_to_numpy=True).astype("float32")
+    distances, indices = index.search(query_vec, top_k)
+
+    results = []
+    for rank, (idx, dist) in enumerate(zip(indices[0], distances[0])):
+        if idx == -1:
+            continue
+        results.append({
+            "rank": rank + 1,
+            "score": float(dist),          # L2 distance — lower is more similar
+            "title": meta["titles"][idx],
+            "text": meta["texts"][idx][:300],
+            "url": meta["urls"][idx] if meta.get("urls") else None,
+        })
+    return results
+
+"""
+# Example usage
+results = search("memory leak when using DataLoader with num_workers > 0", model, index, meta, top_k=5)
+for r in results:
+    print(f"[{r['rank']}] score={r['score']:.4f} — {r['title']}")
+"""
+
+
+#----------------------------------------TFIDF comparison----------------------------------------------
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+tfidf_vectorizer = TfidfVectorizer(max_features=50000, stop_words="english")
+tfidf_matrix = tfidf_vectorizer.fit_transform(corpus_texts)
+
+def tfidf_search(query: str, top_k: int = 5):
+    query_vec = tfidf_vectorizer.transform([query])
+    sims = cosine_similarity(query_vec, tfidf_matrix).flatten()
+    top_idx = sims.argsort()[::-1][:top_k]
+    return [
+        {"rank": i + 1, "score": float(sims[idx]), "title": ds["title"][idx], "text": corpus_texts[idx][:300]}
+        for i, idx in enumerate(top_idx)
+    ]
+
+test_queries = [
+    "segmentation fault on model.eval()",
+    "cannot install package on M1 mac",
+    "docs missing example for custom dataset",
+    # ... 20-30 total, ideally covering different issue "types":
+    #     bug reports, feature requests, doc gaps, install errors, perf issues
+]
+
+for q in test_queries:
+    print(f"\n=== Query: {q} ===")
+    print("-- Semantic (MiniLM) --")
+    for r in search(q, model, index, meta, top_k=3):
+        print(f"  {r['score']:.3f}  {r['title']}")
+    print("-- TF-IDF --")
+    for r in tfidf_search(q, top_k=3):
+        print(f"  {r['score']:.3f}  {r['title']}")
